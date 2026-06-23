@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Chat App</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Inter', 'Segoe UI', sans-serif; }
+        body { background: #0f172a; display: flex; height: 100vh; color: #f8fafc; }
+        
+        .chat-container { display: flex; width: 100%; height: 100vh; background: #1e293b; overflow: hidden; }
+        
+        /* Modern Sidebar Styles */
+        .sidebar { width: 30%; border-right: 1px solid #334155; display: flex; flex-direction: column; background: #0f172a; }
+        .sidebar-header { padding: 24px; background: #1e293b; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; }
+        .sidebar-header h3 { font-size: 20px; color: #38bdf8; font-weight: 700; }
+        .logout-btn { background: #ef4444; color: white; border: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; transition: 0.2s; }
+        .logout-btn:hover { background: #dc2626; }
+        
+        .user-list { flex: 1; overflow-y: auto; list-style: none; padding: 10px; }
+        .user-item { padding: 16px; border-radius: 12px; margin-bottom: 8px; cursor: pointer; display: flex; align-items: center; justify-content: space-between; transition: 0.2s; background: #1e293b; border: 1px solid transparent; }
+        .user-item:hover { background: #334155; }
+        .user-item.active { background: #0284c7; border-color: #38bdf8; }
+        .user-name { font-weight: 600; font-size: 16px; }
+        .status-dot { width: 12px; height: 12px; background: #10b981; border-radius: 50%; box-shadow: 0 0 8px #10b981; }
+
+        /* Modern Chat Window Styles */
+        .chat-window { width: 70%; display: flex; flex-direction: column; background: #0f172a; }
+        .chat-header { padding: 20px 24px; background: #1e293b; border-bottom: 1px solid #334155; font-size: 18px; font-weight: 600; color: #f1f5f9; display: flex; flex-direction: column; gap: 4px; }
+        .typing-status { font-size: 13px; color: #38bdf8; font-weight: 500; height: 18px; }
+        
+        .message-area { flex: 1; padding: 24px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; background-image: radial-gradient(#334155 1px, transparent 1px); background-size: 20px 20px; }
+        
+        /* Attractive Premium Message Bubbles */
+        .message { max-width: 55%; padding: 12px 18px; border-radius: 16px; font-size: 15px; line-height: 1.5; word-wrap: break-word; display: flex; flex-direction: column; gap: 4px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        .message.sent { background: linear-gradient(135deg, #0284c7, #0369a1); color: white; align-self: flex-end; border-bottom-right-radius: 4px; }
+        .message.received { background: #334155; color: #f1f5f9; align-self: flex-start; border-bottom-left-radius: 4px; }
+        
+        /* Timestamps Style */
+        .timestamp { font-size: 10px; color: #cbd5e1; align-self: flex-end; margin-top: 2px; }
+        .message.received .timestamp { color: #94a3b8; }
+        
+        /* Modern Input Box Area */
+        .input-area { padding: 20px 24px; background: #1e293b; border-top: 1px solid #334155; display: flex; gap: 12px; align-items: center; }
+        .input-area input { flex: 1; padding: 14px 20px; background: #1e293b; border: 2px solid #334155; border-radius: 12px; font-size: 15px; color: white; outline: none; transition: 0.2s; }
+        .input-area input:focus { border-color: #38bdf8; background: #0f172a; }
+        .input-area button { background: #0284c7; color: white; border: none; padding: 14px 28px; border-radius: 12px; font-weight: 700; font-size: 15px; cursor: pointer; transition: 0.2s; }
+        .input-area button:hover { background: #0369a1; transform: translateY(-1px); }
+        
+        .placeholder-text { display: flex; justify-content: center; align-items: center; height: 100%; color: #94a3b8; font-size: 18px; font-weight: 500; }
+    </style>
+</head>
+<body>
+
+<div class="chat-container">
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <span id="current-username">Chats</span>
+            <button class="logout-btn" onclick="logout()">Logout</button>
+        </div>
+        <ul class="user-list" id="users-box"></ul>
+    </div>
+
+    <div class="chat-window">
+        <div class="chat-header">
+            <div id="chat-with-header">Select a user to start chatting</div>
+            <div class="typing-status" id="typing-notification"></div>
+        </div>
+        
+        <div class="message-area" id="msg-container">
+            <div class="placeholder-text" id="placeholder">No active chat</div>
+        </div>
+        
+        <form class="input-area" id="chat-form" style="display: none;">
+            <input type="text" id="msg-input" placeholder="Type a message..." autocomplete="off" required>
+            <button type="submit">Send</button>
+        </form>
+    </div>
+</div>
+
+<script>
+    const socket = io();
+    let currentReceiverId = null;
+    let currentUserId = null;
+    let typingTimeout = null;
+
+    window.addEventListener('DOMContentLoaded', async () => {
+        try {
+            const res = await fetch('/api/current-user');
+            if (!res.ok) {
+                window.location.href = '/login.html';
+                return;
+            }
+            const user = await res.json();
+            currentUserId = user._id;
+            document.getElementById('current-username').innerText = user.username;
+            
+            socket.emit('register-user', user._id);
+            loadUsers();
+        } catch (err) {
+            window.location.href = '/login.html';
+        }
+    });
+
+    async function loadUsers() {
+        const res = await fetch('/api/users');
+        const users = await res.json();
+        const usersBox = document.getElementById('users-box');
+        usersBox.innerHTML = '';
+
+        users.forEach(u => {
+            const li = document.createElement('li');
+            li.className = 'user-item';
+            li.innerHTML = `<span class="user-name">${u.username}</span><span class="status-dot"></span>`;
+            li.onclick = () => startChat(u._id, u.username, li);
+            usersBox.appendChild(li);
+        });
+    }
+
+    async function startChat(id, username, element) {
+        currentReceiverId = id;
+
+        document.querySelectorAll('.user-item').forEach(el => el.classList.remove('active'));
+        element.classList.add('active');
+
+        document.getElementById('chat-with-header').innerText = `Chat with ${username}`;
+        document.getElementById('placeholder').style.display = 'none';
+        document.getElementById('chat-form').style.display = 'flex';
+        document.getElementById('typing-notification').innerText = '';
+
+        const msgContainer = document.getElementById('msg-container');
+        msgContainer.innerHTML = '';
+
+        const res = await fetch(`/api/messages/${id}`);
+        const messages = await res.json();
+
+        messages.forEach(msg => {
+            const type = msg.senderId === currentUserId ? 'sent' : 'received';
+            // Formatting timestamp date safely
+            const timeString = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            appendMessage(msg.message, type, timeString);
+        });
+    }
+
+    function appendMessage(text, type, timeStr) {
+        const msgContainer = document.getElementById('msg-container');
+        const div = document.createElement('div');
+        div.className = `message ${type}`;
+        
+        // Appending text and time element together
+        div.innerHTML = `<span>${text}</span><span class="timestamp">${timeStr}</span>`;
+        
+        msgContainer.appendChild(div);
+        msgContainer.scrollTop = msgContainer.scrollHeight;
+    }
+
+    // Trigger typing events when typing inside message box
+    document.getElementById('msg-input').addEventListener('input', () => {
+        if (!currentReceiverId) return;
+        socket.emit('typing', { receiverId: currentReceiverId, senderId: currentUserId });
+
+        clearTimeout(typingTimeout);
+        typingTimeout = setTimeout(() => {
+            socket.emit('stop-typing', { receiverId: currentReceiverId, senderId: currentUserId });
+        }, 2000);
+    });
+
+    document.getElementById('chat-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const input = document.getElementById('msg-input');
+        const message = input.value.trim();
+        if (!message || !currentReceiverId) return;
+
+        socket.emit('send-private-message', {
+            receiverId: currentReceiverId,
+            message: message
+        });
+
+        socket.emit('stop-typing', { receiverId: currentReceiverId, senderId: currentUserId });
+
+        const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        appendMessage(message, 'sent', now);
+        input.value = '';
+    });
+
+    socket.on('receive-private-message', (data) => {
+        if (currentReceiverId && data.senderId === currentReceiverId) {
+            const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            appendMessage(data.message, 'received', now);
+        }
+    });
+
+    // Listen to typing status from remote users
+    socket.on('display-typing', (data) => {
+        if (currentReceiverId && data.senderId === currentReceiverId) {
+            document.getElementById('typing-notification').innerText = 'typing...';
+        }
+    });
+
+    // Listen to stop-typing status from remote users
+    socket.on('hide-typing', (data) => {
+        if (currentReceiverId && data.senderId === currentReceiverId) {
+            document.getElementById('typing-notification').innerText = '';
+        }
+    });
+
+    async function logout() {
+        await fetch('/api/logout', { method: 'POST' });
+        window.location.href = '/login.html';
+    }
+</script>
+</body>
+</html>
